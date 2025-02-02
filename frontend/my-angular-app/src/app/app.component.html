@@ -1,0 +1,85 @@
+<main class="app-container">
+  <div class="sidebar">
+    <div class="logo-container">
+      <div class="app-brand">ChatApp</div>
+    </div>
+    
+    <div class="sidebar-content">
+      <div class="channels-section">
+        <div class="channels-header">
+          <span class="channels-title">Text Channels</span>
+          <button class="add-channel-btn">+</button>
+        </div>
+        
+        <div class="channel-list">
+          <div class="channel-item active">
+            <span class="channel-hash">#</span>
+            <span>general</span>
+            <span class="unread-count">2</span>
+          </div>
+          <div class="channel-item">
+            <span class="channel-hash">#</span>
+            <span>random</span>
+          </div>
+          <div class="channel-item">
+            <span class="channel-hash">#</span>
+            <span>help</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="user-info">
+        <div class="user-avatar">
+          <img [src]="'https://api.dicebear.com/7.x/avataaars/svg?seed=' + username" alt="avatar" />
+          <span class="status-indicator"></span>
+        </div>
+        <div class="user-details">
+          <span class="username">{{ username }}</span>
+          <span class="status">Online</span>
+        </div>
+        <div class="user-controls">
+          <button class="control-btn"><i class="fas fa-microphone"></i></button>
+          <button class="control-btn"><i class="fas fa-headphones"></i></button>
+          <button class="control-btn"><i class="fas fa-cog"></i></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="main-content">
+    <div class="chat-header">
+      <div class="channel-info">
+        <span class="channel-hash">#</span>
+        <span class="channel-name">general</span>
+        <span class="channel-description">General discussion</span>
+      </div>
+      <div class="header-actions">
+        <button class="header-btn"><i class="fas fa-bell"></i></button>
+        <button class="header-btn"><i class="fas fa-thumbtack"></i></button>
+        <button class="header-btn"><i class="fas fa-users"></i></button>
+        <div class="search-bar">
+          <input type="text" placeholder="Search" />
+          <i class="fas fa-search"></i>
+        </div>
+        <button class="header-btn"><i class="fas fa-inbox"></i></button>
+        <button class="header-btn"><i class="fas fa-question-circle"></i></button>
+      </div>
+    </div>
+    
+    <div class="chat-messages">
+      <app-notification></app-notification>
+    </div>
+
+    <div class="message-input-container">
+      <div class="message-input-wrapper">
+        <button class="attachment-btn"><i class="fas fa-plus-circle"></i></button>
+        <input type="text" class="message-input" placeholder="Message #general" />
+        <div class="input-actions">
+          <button class="action-btn"><i class="fas fa-gift"></i></button>
+          <button class="action-btn"><i class="fas fa-file-image"></i></button>
+          <button class="action-btn"><i class="fas fa-smile"></i></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
