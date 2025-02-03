@@ -3,146 +3,80 @@ from datetime import datetime
 import json
 import traceback
 import redis.asyncio as redis
-from aiohttp import web
+from aiohttp import web, WSMsgType
 from sqlalchemy.orm import Session
 from appserver.datamodel.auth_models import User, Post
+import ssl
 
 class AuthHandler:
     def __init__(self, container):
         self.container = container
+        # Initialize Redis client
+        self.redis_client = redis.Redis(
+            host='localhost',
+            port=6379,
+            db=0,
+            decode_responses=True
+        )
 
     async def websocket_handler(self, request):
-        ws = web.WebSocketResponse(heartbeat=30, autoping=True)
-        
+        # Create a WebSocket response object with heartbeat and autoping to keep the connection alive
+        ws = web.WebSocketResponse(heartbeat=30, autoping=True, compress=True)
+        await ws.prepare(request)  # Perform the necessary handshake to upgrade the HTTP connection to a WebSocket connection
+        user_id = request.query.get('user_id', 'Anonymous')
+
+        # Get a database session from the container
+        session_factory = self.container.get_service("db_session")
+        session = session_factory()
+
         try:
-            await ws.prepare(request)
-            user_id = request.query.get('user_id', 'Anonymous')
-            
-            session_factory = self.container.get_service("db_session")
-            session = session_factory()
-            
-            try:
+            # Try to get the user from the cache
+            user = await self.get_user_from_cache(user_id)
+            if not user:
+                # If the user is not in the cache, fetch from the database
                 user = session.query(User).filter(User.username == user_id).first()
                 if not user:
                     await ws.close(code=4001, message=b'User not found')
                     return ws
+                # Cache the user data
+                await self.cache_user(user)
 
-                print(f'WebSocket connection established. User: {user_id}')
-                
-                redis_client = redis.Redis(
-                    host='localhost',
-                    port=6379,
-                    db=0,
-                    decode_responses=True
-                )
-                
-                pubsub = redis_client.pubsub()
-                subscribed_channels = set()
+            print(f'WebSocket connection established. User: {user_id}')
 
-                # Subscribe to user's private channel
-                await pubsub.subscribe(f'user_{user_id}')
-                
-                # If user is moderator, subscribe to moderator channel
-                if user.is_moderator:
-                    await pubsub.subscribe('moderator_channel')
-                    
-                async def stream_messages():
-                    try:
-                        async for message in pubsub.listen():
-                            if message['type'] == 'message':
-                                await ws.send_str(message['data'])
-                    except Exception as e:
-                        print(f"Error in stream_messages: {str(e)}")
+            # Initialize Redis Pub/Sub
+            pubsub = self.redis_client.pubsub()
+            await pubsub.subscribe(f'user_{user_id}')
+            if user.is_moderator:
+                await pubsub.subscribe('moderator_channel')
 
-                async def ws_receive():
-                    try:
-                        async for msg in ws:
-                            if msg.type == web.WSMsgType.TEXT:
-                                data = json.loads(msg.data)
-                                message_type = data.get('type')
-                                
-                                if message_type == 'subscribe_request':
-                                    channel = data.get('channel')
-                                    print(f"Subscription request from {user_id} for channel: {channel}")
-                                    
-                                    # Send request to moderators
-                                    request_message = json.dumps({
-                                        'type': 'subscription_request',
-                                        'requesting_user': user_id,
-                                        'channel': channel,
-                                        'timestamp': str(datetime.now())
-                                    })
-                                    await redis_client.publish('moderator_channel', request_message)
-                                    
-                                    # Notify user that request is pending
-                                    await ws.send_str(json.dumps({
-                                        'type': 'system',
-                                        'message': f'Subscription request sent for {channel}',
-                                        'timestamp': str(datetime.now())
-                                    }))
+            # Coroutine to stream messages from Redis to WebSocket
+            async def stream_messages():
+                try:
+                    async for message in pubsub.listen():
+                        if message['type'] == 'message':
+                            await ws.send_str(message['data'])
+                except Exception as e:
+                    print(f"Error in stream_messages: {str(e)}")
 
-                                elif message_type == 'approve_subscription':
-                                    if user.is_moderator:
-                                        target_user = data.get('requesting_user')
-                                        channel = data.get('channel')
-                                        
-                                        # Add user to channel subscribers in database
-                                        async with session_factory() as session:
-                                            target = await session.query(User).filter(
-                                                User.username == target_user
-                                            ).first()
-                                            if target:
-                                                # Add channel subscription logic here
-                                                pass
-                                        
-                                        # Send approval to requesting user
-                                        approval_message = json.dumps({
-                                            'type': 'subscription_approved',
-                                            'channel': channel,
-                                            'message': f'Your subscription to {channel} was approved',
-                                            'timestamp': str(datetime.now())
-                                        })
-                                        await redis_client.publish(f'user_{target_user}', approval_message)
-                                    else:
-                                        await ws.send_str(json.dumps({
-                                            'type': 'error',
-                                            'message': 'Unauthorized: Only moderators can approve subscriptions'
-                                        }))
+            # Coroutine to handle incoming WebSocket messages
+            async def ws_receive():
+                try:
+                    async for msg in ws:
+                        if msg.type == WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            message_type = data.get('type')
+                            # Handle different message types
+                except Exception as e:
+                    print(f"Error in ws_receive: {str(e)}")
 
-                                elif message_type == 'chat_message':
-                                    channel = data.get('channel')
-                                    if channel in subscribed_channels:
-                                        chat_message = json.dumps({
-                                            'type': 'chat_message',
-                                            'user': user_id,
-                                            'message': data.get('message'),
-                                            'channel': channel,
-                                            'timestamp': str(datetime.now())
-                                        })
-                                        await redis_client.publish(channel, chat_message)
-                                    else:
-                                        await ws.send_str(json.dumps({
-                                            'type': 'error',
-                                            'message': 'Not subscribed to this channel'
-                                        }))
+            # Run both coroutines concurrently
+            await asyncio.gather(stream_messages(), ws_receive())
 
-                    except Exception as e:
-                        print(f"Error in ws_receive: {str(e)}")
-                        traceback.print_exc()
-
-                await asyncio.gather(stream_messages(), ws_receive())
-
-            except Exception as e:
-                print(f"WebSocket handler error: {str(e)}")
-                traceback.print_exc()
-            finally:
-                session.close()
-            
         except Exception as e:
-            print(f"WebSocket handler error: {str(e)}")
-            traceback.print_exc()
-            if not ws.closed:
-                await ws.close()
+            print(f"Error in websocket_handler: {str(e)}")
+        finally:
+            await ws.close()
+
         return ws
 
     async def login(self, request):
@@ -199,23 +133,49 @@ class AuthHandler:
         return web.json_response({'id': user.id, 'username': user.username, 'email': user.email})
 
     async def create_post(self, request):
+        # Parse the request data
         data = await request.json()
         title = data.get('title')
         content = data.get('content')
         author_id = data.get('author_id')
 
+        # Create a new post and save it to the database
         async with request.app['db_session']() as session:
             post = Post(title=title, content=content, author_id=author_id)
             session.add(post)
             session.commit()
 
+        # Return the created post as a JSON response
         return web.json_response({'id': post.id, 'title': post.title, 'content': post.content, 'author_id': post.author_id})
 
     async def get_posts_by_user(self, request):
         user_id = request.match_info.get('user_id')
+        # Try to get the posts from the cache
+        cached_posts = await self.redis_client.get(f'posts:{user_id}')
+        if cached_posts:
+            return web.json_response(json.loads(cached_posts))
 
+        # If the posts are not in the cache, fetch from the database
         async with request.app['db_session']() as session:
             posts = session.query(Post).filter(Post.author_id == user_id).all()
 
+        # Cache the fetched posts
         posts_data = [{'id': post.id, 'title': post.title, 'content': post.content} for post in posts]
+        await self.redis_client.set(f'posts:{user_id}', json.dumps(posts_data), ex=3600)  # Cache for 1 hour
         return web.json_response(posts_data)
+
+    async def get_user_from_cache(self, user_id):
+        # Try to get the user data from the cache
+        user_data = await self.redis_client.get(f'user:{user_id}')
+        if user_data:
+            return json.loads(user_data)
+        return None
+
+    async def cache_user(self, user):
+        # Cache the user data with an expiration time of 1 hour
+        user_data = {
+            'id': user.id,
+            'username': user.username,
+            'is_moderator': user.is_moderator
+        }
+        await self.redis_client.set(f'user:{user.username}', json.dumps(user_data), ex=3600)  # Cache for 1 hour

@@ -20,6 +20,8 @@ export class NotificationService {
   private pendingRequestsSubject = new BehaviorSubject<ChatMessage[]>([]);
   private currentUser: string | null = null;
   private subscribedChannels: Set<string> = new Set();
+  private messageQueue: ChatMessage[] = [];
+  private batchInterval: number = 1000; // 1 second
 
   // Observables for components to subscribe to
   public notifications$ = this.messagesSubject.asObservable();
@@ -35,12 +37,15 @@ export class NotificationService {
         this.close();
       }
     });
+
+    // Start batching messages
+    setInterval(() => this.sendBatch(), this.batchInterval);
   }
 
   connect() {
     if (!this.currentUser) return;
 
-    this.socket = new WebSocket(`ws://localhost:8000/ws?user_id=${this.currentUser}`);
+    this.socket = new WebSocket(`wss://localhost:8000/ws?user_id=${this.currentUser}`);
 
     this.socket.onmessage = (event) => {
       try {
@@ -148,14 +153,21 @@ export class NotificationService {
     }
 
     if (this.socket?.readyState === WebSocket.OPEN) {
-      const chatMessage = {
+      const chatMessage: ChatMessage = {
         type: 'chat_message',
         channel: channel,
         message: message,
-        user: this.currentUser,
+        user: this.currentUser!,
         timestamp: new Date().toISOString()
       };
-      this.socket.send(JSON.stringify(chatMessage));
+      this.messageQueue.push(chatMessage);
+    }
+  }
+
+  sendBatch() {
+    if (this.socket?.readyState === WebSocket.OPEN && this.messageQueue.length > 0) {
+      const batch = this.messageQueue.splice(0, this.messageQueue.length);
+      this.socket.send(JSON.stringify(batch));
     }
   }
 
